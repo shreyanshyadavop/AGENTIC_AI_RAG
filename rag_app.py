@@ -1,263 +1,125 @@
 import streamlit as st
 import os
-import requests
-from langchain_community.vectorstores import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_openai import ChatOpenAI
-from langchain_core.documents import Document
-from langchain_core.prompts import ChatPromptTemplate
+from openai import OpenAI
 
 # Get API key
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not OPENAI_API_KEY:
-    st.error("OPENAI_API_KEY not found. Please set it in secrets.")
+    st.error("OPENAI_API_KEY not found in secrets!")
     st.stop()
+
+# Initialize OpenAI
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Page config
 st.set_page_config(
     page_title="Knowledge Assistant",
     page_icon="📚",
-    layout="wide",
-    initial_sidebar_state="collapsed"
+    layout="wide"
 )
 
-st.markdown("""
-    <style>
-    [data-testid="stChatMessageContainer"] { background-color: #f8f9fa; }
-    </style>
-""", unsafe_allow_html=True)
+st.title("📚 Knowledge Assistant")
+st.subheader("Search organizational documents")
 
-# Initialize embeddings once
-@st.cache_resource
-def get_embeddings():
-    """Initialize HuggingFace embeddings"""
-    return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+# Sample knowledge base
+KNOWLEDGE_BASE = """
+COMPANY CULTURE POLICY:
+- Treat colleagues with respect
+- Participate in team projects
+- Attend monthly meetings
+- Benefits: Health insurance, 401k, remote work
 
-@st.cache_resource
-def get_llm():
-    """Initialize OpenAI LLM"""
-    return ChatOpenAI(
-        model="gpt-3.5-turbo",
-        api_key=OPENAI_API_KEY,
-        temperature=0
-    )
+FINANCIAL POLICY:
+- Budget <$5K: Manager approval
+- Budget $5K-$50K: Director approval
+- Budget >$50K: Board approval
+- Reimbursement: Submit within 30 days with receipts
 
-@st.cache_resource
-def get_vector_store():
-    """Initialize or load Chroma vector store with sample data"""
-    embeddings = get_embeddings()
-    
-    # Sample organizational documents
-    sample_docs = [
-        Document(
-            page_content="""Company Culture Policy
-            
-Our company is committed to fostering an inclusive and collaborative work environment. 
-All employees are expected to:
-- Treat colleagues with respect and dignity
-- Participate actively in team projects
-- Attend mandatory monthly culture meetings
-- Report any issues through proper channels
+IT SECURITY:
+- Password: 12+ chars, update every 90 days
+- Device: Enable encryption, use VPN
+- Data: Public, Internal, Confidential, Restricted
 
-Benefits: Health insurance, 401k matching, remote work flexibility""",
-            metadata={"source": "culture_policy.txt", "topic": "HR"}
-        ),
-        Document(
-            page_content="""Financial Policy Guidelines
+ONBOARDING:
+Day 1: Welcome, office tour, intro to team
+Week 1: IT setup, system training, orientation
+Month 1: Compliance training, set goals
 
-Project Budget Approval:
-- Under $5,000: Department Manager approval
-- $5,000 - $50,000: Director approval  
-- Over $50,000: Executive Board approval
+LEAVE POLICY:
+- Vacation: 20 days/year (full-time), 10 days/year (part-time)
+- Sick Leave: 10 days/year
+- Holidays: 10 national + 2 company holidays
+"""
 
-Expense Reimbursement:
-- Submit within 30 days with receipts
-- Personal expenses not covered
-- Travel requires pre-approval""",
-            metadata={"source": "financial_policy.txt", "topic": "Finance"}
-        ),
-        Document(
-            page_content="""IT Security Guidelines
-
-Password Requirements:
-- Minimum 12 characters
-- Update every 90 days
-- No sharing between employees
-
-Device Security:
-- Enable disk encryption
-- Use VPN for remote access
-- Lock device when away
-- Report lost devices immediately
-
-Data Classification:
-- Public, Internal, Confidential, Restricted
-- Follow access control policies
-- Secure deletion required""",
-            metadata={"source": "it_security.txt", "topic": "IT"}
-        ),
-        Document(
-            page_content="""Employee Onboarding Checklist
-
-Day 1:
-- Welcome meeting with HR
-- Office tour and access setup
-- Introduction to team members
-- Review company policies
-
-Week 1:
-- IT setup (laptop, email, accounts)
-- System access training
-- Department orientation
-- Assign mentor/buddy
-
-Month 1:
-- Complete compliance training
-- Meet department head
-- Set 30-day goals
-- Attend culture meeting""",
-            metadata={"source": "onboarding.txt", "topic": "HR"}
-        ),
-        Document(
-            page_content="""Leave and Time Off Policy
-
-Vacation Days:
-- Full-time employees: 20 days per year
-- Part-time employees: 10 days per year
-- Unused days can be carried over (max 5 days)
-
-Sick Leave:
-- 10 days per year
-- No limit on carryover
-- Medical certificate required for >3 consecutive days
-
-Holidays:
-- 10 national holidays
-- 2 company-specific holidays
-- Diwali, New Year, etc.
-
-Request Process:
-- Submit 2 weeks in advance
-- Approved by manager
-- Backfill coverage required""",
-            metadata={"source": "leave_policy.txt", "topic": "HR"}
-        ),
-    ]
-    
-    # Create vector store
+def get_answer(question):
+    """Get answer using OpenAI"""
     try:
-        vector_store = Chroma.from_documents(
-            documents=sample_docs,
-            embedding=embeddings,
-            persist_directory=".chroma_db"
-        )
-    except Exception as e:
-        st.warning(f"Using in-memory vector store: {str(e)}")
-        vector_store = Chroma.from_documents(
-            documents=sample_docs,
-            embedding=embeddings
-        )
-    
-    return vector_store
+        prompt = f"""You are a company knowledge assistant. Answer questions based ONLY on this knowledge base:
 
-def search_knowledge_base(query: str) -> str:
-    """Search knowledge base and get answer"""
-    try:
-        vector_store = get_vector_store()
-        llm = get_llm()
-        
-        # Get relevant documents
-        retriever = vector_store.as_retriever(search_kwargs={"k": 3})
-        docs = retriever.invoke(query)
-        
-        if not docs:
-            return "No relevant documents found for your query."
-        
-        # Create prompt for answer generation
-        prompt = ChatPromptTemplate.from_template("""Based on the following context from company policies, answer the question directly and concisely.
-
-Context:
-{context}
+KNOWLEDGE BASE:
+{KNOWLEDGE_BASE}
 
 Question: {question}
 
-Answer: Provide a clear, concise answer based only on the provided context.""")
+Answer concisely and accurately based only on the knowledge base provided."""
         
-        # Format context from retrieved documents
-        context = "\n\n".join([f"[{doc.metadata.get('topic', 'General')}]\n{doc.page_content}" for doc in docs])
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=500
+        )
         
-        # Create chain and get answer
-        chain = prompt | llm
-        result = chain.invoke({"context": context, "question": query})
-        
-        return result.content
-        
+        return response.choices[0].message.content
+    
     except Exception as e:
-        return f"Error searching knowledge base: {str(e)}"
+        return f"Error: {str(e)}"
 
-# Main UI
-st.title("📚 Knowledge Assistant")
-st.subheader("Search organizational documents and policies")
-
-col1, col2 = st.columns([2, 1], gap="large")
+# UI
+col1, col2 = st.columns([2, 1])
 
 with col1:
-    st.markdown("### Search Knowledge Base")
+    st.markdown("### Ask a Question")
     user_query = st.text_area(
         "What would you like to know?",
-        placeholder="e.g., What's the budget approval process? How many vacation days do I get?",
+        placeholder="e.g., What's the budget approval process?",
         height=100,
         label_visibility="collapsed"
     )
     
     if st.button("🔍 Search", use_container_width=True, type="primary"):
         if user_query.strip():
-            with st.spinner("🔎 Searching documents..."):
-                try:
-                    answer = search_knowledge_base(user_query)
-                    st.markdown("### Answer")
-                    st.info(answer)
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
+            with st.spinner("Searching..."):
+                answer = get_answer(user_query)
+                st.markdown("### Answer")
+                st.info(answer)
         else:
-            st.warning("Please enter a question!")
+            st.warning("Please ask a question!")
 
 with col2:
-    st.markdown("### 📖 Quick Help")
+    st.markdown("### Available Topics")
     st.markdown("""
-    **Available Topics:**
-    - HR Policies
-    - Financial Guidelines
-    - IT Security
-    - Onboarding
-    - Leave & Time Off
-    
-    **Example Queries:**
-    - Budget approval limits?
-    - How many vacation days?
-    - Password requirements?
-    - Onboarding steps?
+    📋 Culture Policy
+    💰 Financial Guidelines
+    🔒 IT Security
+    👤 Onboarding Process
+    🏖️ Leave Policy
     """)
     
     st.divider()
+    st.markdown("### Example Questions")
     
-    st.markdown("### Popular Questions")
-    questions = [
-        "What are the budget approval limits?",
-        "How many vacation days do employees get?",
-        "What's the password policy?",
-        "What's the onboarding process?"
+    examples = [
+        "Budget approval process?",
+        "Vacation days?",
+        "Password requirements?",
+        "Onboarding steps?"
     ]
     
-    for q in questions:
-        if st.button(q, use_container_width=True, key=q):
-            st.session_state.user_query = q
+    for ex in examples:
+        if st.button(ex, use_container_width=True, key=ex):
+            st.session_state.query = ex
 
 st.divider()
-st.markdown("""
-<div style='text-align: center; color: #888; font-size: 12px;'>
-    <p>📚 Knowledge Assistant | Powered by RAG + OpenAI</p>
-    <p>Built with LangChain & Chroma Vector Database</p>
-</div>
-""", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #888; font-size: 11px;'>📚 Knowledge Assistant | OpenAI Powered</p>", unsafe_allow_html=True)
