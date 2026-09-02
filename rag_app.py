@@ -1,16 +1,13 @@
 import streamlit as st
 import os
-from openai import OpenAI
+import requests
 
 # Get API key
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-if not OPENAI_API_KEY:
-    st.error("OPENAI_API_KEY not found in secrets!")
+if not OPENROUTER_API_KEY:
+    st.error("OPENROUTER_API_KEY not found in secrets!")
     st.stop()
-
-# Initialize OpenAI
-client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Page config
 st.set_page_config(
@@ -53,7 +50,7 @@ LEAVE POLICY:
 """
 
 def get_answer(question):
-    """Get answer using OpenAI"""
+    """Get answer using OpenRouter"""
     try:
         prompt = f"""You are a company knowledge assistant. Answer questions based ONLY on this knowledge base:
 
@@ -64,14 +61,33 @@ Question: {question}
 
 Answer concisely and accurately based only on the knowledge base provided."""
         
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=500
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "HTTP-Referer": "https://streamlit.app",
+            "X-Title": "Knowledge Assistant"
+        }
+        
+        data = {
+            "model": "z-ai/glm-5.3-flash",
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0,
+            "max_tokens": 500
+        }
+        
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=30
         )
         
-        return response.choices[0].message.content
+        if response.status_code != 200:
+            return f"Error: {response.status_code} - {response.json().get('error', {}).get('message', 'Unknown error')}"
+        
+        result = response.json()
+        return result["choices"][0]["message"]["content"]
     
     except Exception as e:
         return f"Error: {str(e)}"
@@ -122,4 +138,4 @@ with col2:
             st.session_state.query = ex
 
 st.divider()
-st.markdown("<p style='text-align: center; color: #888; font-size: 11px;'>📚 Knowledge Assistant | OpenAI Powered</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #888; font-size: 11px;'>📚 Knowledge Assistant | OpenRouter Powered</p>", unsafe_allow_html=True)
