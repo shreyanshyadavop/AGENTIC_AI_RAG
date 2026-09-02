@@ -1,16 +1,13 @@
 import streamlit as st
 import os
-from dotenv import load_dotenv
 import requests
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_openai import ChatOpenAI
-from langchain.chains import RetrievalQA
 from langchain_core.documents import Document
-import json
+from langchain_core.prompts import ChatPromptTemplate
 
-# Load environment
-load_dotenv()
+# Get API key
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not OPENAI_API_KEY:
@@ -122,14 +119,45 @@ Month 1:
 - Attend culture meeting""",
             metadata={"source": "onboarding.txt", "topic": "HR"}
         ),
+        Document(
+            page_content="""Leave and Time Off Policy
+
+Vacation Days:
+- Full-time employees: 20 days per year
+- Part-time employees: 10 days per year
+- Unused days can be carried over (max 5 days)
+
+Sick Leave:
+- 10 days per year
+- No limit on carryover
+- Medical certificate required for >3 consecutive days
+
+Holidays:
+- 10 national holidays
+- 2 company-specific holidays
+- Diwali, New Year, etc.
+
+Request Process:
+- Submit 2 weeks in advance
+- Approved by manager
+- Backfill coverage required""",
+            metadata={"source": "leave_policy.txt", "topic": "HR"}
+        ),
     ]
     
-    # Create or load vector store
-    vector_store = Chroma.from_documents(
-        documents=sample_docs,
-        embedding=embeddings,
-        persist_directory=".chroma_db"
-    )
+    # Create vector store
+    try:
+        vector_store = Chroma.from_documents(
+            documents=sample_docs,
+            embedding=embeddings,
+            persist_directory=".chroma_db"
+        )
+    except Exception as e:
+        st.warning(f"Using in-memory vector store: {str(e)}")
+        vector_store = Chroma.from_documents(
+            documents=sample_docs,
+            embedding=embeddings
+        )
     
     return vector_store
 
@@ -139,22 +167,36 @@ def search_knowledge_base(query: str) -> str:
         vector_store = get_vector_store()
         llm = get_llm()
         
-        # Create QA chain
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=vector_store.as_retriever(search_kwargs={"k": 3}),
-            return_source_documents=True
-        )
+        # Get relevant documents
+        retriever = vector_store.as_retriever(search_kwargs={"k": 3})
+        docs = retriever.invoke(query)
         
-        # Get answer
-        result = qa_chain({"query": query})
-        return result["result"]
+        if not docs:
+            return "No relevant documents found for your query."
+        
+        # Create prompt for answer generation
+        prompt = ChatPromptTemplate.from_template("""Based on the following context from company policies, answer the question directly and concisely.
+
+Context:
+{context}
+
+Question: {question}
+
+Answer: Provide a clear, concise answer based only on the provided context.""")
+        
+        # Format context from retrieved documents
+        context = "\n\n".join([f"[{doc.metadata.get('topic', 'General')}]\n{doc.page_content}" for doc in docs])
+        
+        # Create chain and get answer
+        chain = prompt | llm
+        result = chain.invoke({"context": context, "question": query})
+        
+        return result.content
         
     except Exception as e:
         return f"Error searching knowledge base: {str(e)}"
 
-# UI
+# Main UI
 st.title("📚 Knowledge Assistant")
 st.subheader("Search organizational documents and policies")
 
@@ -164,7 +206,7 @@ with col1:
     st.markdown("### Search Knowledge Base")
     user_query = st.text_area(
         "What would you like to know?",
-        placeholder="e.g., What's the budget approval process? How do I get reimbursed?",
+        placeholder="e.g., What's the budget approval process? How many vacation days do I get?",
         height=100,
         label_visibility="collapsed"
     )
@@ -189,11 +231,12 @@ with col2:
     - Financial Guidelines
     - IT Security
     - Onboarding
+    - Leave & Time Off
     
     **Example Queries:**
     - Budget approval limits?
+    - How many vacation days?
     - Password requirements?
-    - Reimbursement process?
     - Onboarding steps?
     """)
     
@@ -202,7 +245,7 @@ with col2:
     st.markdown("### Popular Questions")
     questions = [
         "What are the budget approval limits?",
-        "How do I get reimbursed for expenses?",
+        "How many vacation days do employees get?",
         "What's the password policy?",
         "What's the onboarding process?"
     ]
@@ -214,6 +257,7 @@ with col2:
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #888; font-size: 12px;'>
-    <p>📚 Knowledge Assistant | Powered by RAG + LLMs</p>
+    <p>📚 Knowledge Assistant | Powered by RAG + OpenAI</p>
+    <p>Built with LangChain & Chroma Vector Database</p>
 </div>
 """, unsafe_allow_html=True)
